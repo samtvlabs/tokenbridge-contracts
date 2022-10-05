@@ -1,7 +1,9 @@
 /* eslint-disable no-param-reassign */
+const ethers = require('ethers')
 const BigNumber = require('bignumber.js')
 const Web3 = require('web3')
-const Tx = require('ethereumjs-tx')
+const Transaction = require('@ethereumjs/tx').Transaction
+const Common = require('@ethereumjs/common').default
 const Web3Utils = require('web3-utils')
 const fetch = require('node-fetch')
 const assert = require('assert')
@@ -23,6 +25,26 @@ const {
 } = require('./web3')
 const verifier = require('./utils/verifier')
 
+const customCommonForeign = Common.forCustomChain(
+  'mainnet',
+  {
+    name: 'godwoken-mainnet',
+    networkId: 71402,
+    chainId: 71402,
+  },
+  'byzantium',
+)
+
+const customCommonHome = Common.forCustomChain(
+  'mainnet',
+  {
+    name: 'axon',
+    networkId: 2022,
+    chainId: 2022,
+  },
+  'byzantium',
+)
+
 async function deployContract(contractJson, args, { from, network, nonce }) {
   let web3
   let url
@@ -35,12 +57,16 @@ async function deployContract(contractJson, args, { from, network, nonce }) {
     gasPrice = FOREIGN_DEPLOYMENT_GAS_PRICE
     apiUrl = FOREIGN_EXPLORER_URL
     apiKey = FOREIGN_EXPLORER_API_KEY
+    customCommon = customCommonForeign
+    web3Ethers = new ethers.providers.JsonRpcProvider(FOREIGN_RPC_URL)
   } else {
     web3 = web3Home
     url = HOME_RPC_URL
     gasPrice = HOME_DEPLOYMENT_GAS_PRICE
     apiUrl = HOME_EXPLORER_URL
     apiKey = HOME_EXPLORER_API_KEY
+    customCommon = customCommonHome
+    web3Ethers = new ethers.providers.JsonRpcProvider(HOME_RPC_URL)
   }
   const options = {
     from
@@ -56,9 +82,11 @@ async function deployContract(contractJson, args, { from, network, nonce }) {
     data: result,
     nonce: Web3Utils.toHex(nonce),
     to: null,
-    privateKey: deploymentPrivateKey,
+    privateKey: Buffer.from(deploymentPrivateKey, 'hex'),
     url,
-    gasPrice
+    chainId: web3Ethers.getNetwork().chainId,
+    gasPrice,
+    customCommon
   })
   if (Web3Utils.hexToNumber(tx.status) !== 1 && !tx.contractAddress) {
     throw new Error('Tx failed')
@@ -80,18 +108,21 @@ async function deployContract(contractJson, args, { from, network, nonce }) {
 async function sendRawTxHome(options) {
   return sendRawTx({
     ...options,
-    gasPrice: HOME_DEPLOYMENT_GAS_PRICE
+    gasPrice: HOME_DEPLOYMENT_GAS_PRICE,
+    customCommon: customCommonHome
+
   })
 }
 
 async function sendRawTxForeign(options) {
   return sendRawTx({
     ...options,
-    gasPrice: FOREIGN_DEPLOYMENT_GAS_PRICE
+    gasPrice: FOREIGN_DEPLOYMENT_GAS_PRICE,
+    customCommon: customCommonForeign
   })
 }
 
-async function sendRawTx({ data, nonce, to, privateKey, url, gasPrice, value }) {
+async function sendRawTx({ data, nonce, to, privateKey, url, gasPrice, value , chainId, customCommon}) {
   try {
     const txToEstimateGas = {
       from: privateKeyToAddress(Web3Utils.bytesToHex(privateKey)),
@@ -121,12 +152,13 @@ async function sendRawTx({ data, nonce, to, privateKey, url, gasPrice, value }) 
       gasLimit: Web3Utils.toHex(gas),
       to,
       data,
-      value
+      value, 
+      chainId 
     }
 
-    const tx = new Tx(rawTx)
-    tx.sign(privateKey)
-    const serializedTx = tx.serialize()
+    const tx = new Transaction(rawTx, { common: customCommon })
+    const signedTx = tx.sign(privateKey)
+    const serializedTx = signedTx.serialize()
     const txHash = await sendNodeRequest(url, 'eth_sendRawTransaction', `0x${serializedTx.toString('hex')}`)
     console.log('pending txHash', txHash)
     return await getReceipt(txHash, url)
